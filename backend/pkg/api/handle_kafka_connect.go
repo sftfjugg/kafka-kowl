@@ -31,6 +31,8 @@ func (api *API) handleGetConnectors() http.HandlerFunc {
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("handleGetConnectors")
+
 		ctx, cancel := context.WithTimeout(r.Context(), api.ConnectSvc.Cfg.RequestTimeout)
 		defer cancel()
 
@@ -73,6 +75,8 @@ func (api *API) handleGetConnectors() http.HandlerFunc {
 func (api *API) handleGetClusterConnectors() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		clusterName := rest.GetURLParam(r, "clusterName")
+
+		fmt.Println("handleGetClusterConnectors " + clusterName)
 
 		ctx, cancel := context.WithTimeout(r.Context(), api.ConnectSvc.Cfg.RequestTimeout)
 		defer cancel()
@@ -216,6 +220,13 @@ func (api *API) handlePutConnectorConfig() http.HandlerFunc {
 		}
 
 		cInfo, restErr := api.ConnectSvc.PutConnectorConfig(r.Context(), clusterName, connectorName, req.ToClientRequest())
+		if restErr != nil {
+			rest.SendRESTError(w, r, api.Logger, restErr)
+			return
+		}
+
+		// restart the instance and all the tasks
+		restErr = api.ConnectSvc.RestartConnector(r.Context(), clusterName, connectorName, true)
 		if restErr != nil {
 			rest.SendRESTError(w, r, api.Logger, restErr)
 			return
@@ -441,7 +452,7 @@ func (api *API) handleRestartConnector() http.HandlerFunc {
 			return
 		}
 
-		restErr = api.ConnectSvc.RestartConnector(ctx, clusterName, connector)
+		restErr = api.ConnectSvc.RestartConnector(ctx, clusterName, connector, true)
 		if restErr != nil {
 			rest.SendRESTError(w, r, api.Logger, restErr)
 			return
