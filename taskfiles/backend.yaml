@@ -48,3 +48,17 @@ tasks:
     dir: "{{.BACKEND_ROOT}}"
     cmds:
       - '{{ .BUILD_ROOT }}/bin/go/golangci-lint run --timeout 10m ./...'
+
+  test-unit:
+    dir: "{{.BACKEND_ROOT}}"
+    desc: Run Go unit tests
+    cmds:
+      - |
+        GOBIN={{ .BUILD_ROOT }}/bin/go go test ./...
+
+  test-integration:
+    dir: "{{.BACKEND_ROOT}}"
+    desc: Run integration tests
+    cmds:
+      - |
+        GOBIN={{ .BUILD_ROOT }}/bin/go go test --tags=integration ./...

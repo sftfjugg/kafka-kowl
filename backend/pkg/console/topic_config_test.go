@@ -4,7 +4,6 @@ package console
 
 import (
 	"context"
-	"net"
 	"testing"
 
 	"github.com/redpanda-data/console/backend/pkg/config"
@@ -13,7 +12,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func Test_GetClusterInfo(t *testing.T) {
+func Test_GetTopicConfigs(t *testing.T) {
 	ctx := context.Background()
 	log, err := zap.NewProduction()
 	assert.NoError(t, err)
@@ -21,7 +20,7 @@ func Test_GetClusterInfo(t *testing.T) {
 	cfg := config.Config{}
 	cfg.SetDefaults()
 
-	cfg.MetricsNamespace = "console_get_cluster_info"
+	cfg.MetricsNamespace = "console_get_topic_configs"
 	cfg.Kafka.Brokers = []string{testSeedBroker}
 
 	kafkaSvc, err := kafka.NewService(&cfg, log, cfg.MetricsNamespace)
@@ -32,20 +31,12 @@ func Test_GetClusterInfo(t *testing.T) {
 
 	defer svc.kafkaSvc.KafkaClient.Close()
 
-	info, err := svc.GetClusterInfo(ctx)
-	assert.NoError(t, err)
-	assert.NotNil(t, info)
+	topicConfig, restErr := svc.GetTopicConfigs(ctx, TEST_TOPIC_NAME, nil)
+	assert.Nil(t, restErr)
+	assert.NotNil(t, topicConfig)
+	assert.Equal(t, TEST_TOPIC_NAME, topicConfig.TopicName)
+	assert.NotEmpty(t, topicConfig.ConfigEntries)
 
-	assert.Equal(t, "unknown custom version at least v0.10.2", info.KafkaVersion)
-	assert.Len(t, info.Brokers, 1)
-	assert.NotEmpty(t, info.Brokers[0])
-
-	expectedAddr, expectedPort, err := net.SplitHostPort(testSeedBroker)
-	assert.NoError(t, err)
-
-	actualAddr, actualPort, err := net.SplitHostPort(testSeedBroker)
-	assert.NoError(t, err)
-
-	assert.Equal(t, expectedAddr, actualAddr)
-	assert.Equal(t, expectedPort, actualPort)
+	assert.NotNil(t, topicConfig.ConfigEntries[0])
+	assert.False(t, topicConfig.ConfigEntries[0].IsReadOnly)
 }
