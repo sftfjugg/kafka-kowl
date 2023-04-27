@@ -31,6 +31,17 @@ tasks:
     status:
       - '[ -f ''{{ .BUILD_ROOT }}/bin/go'' ] || command -v {{ .BUILD_ROOT }}/bin/go/gci >/dev/null 2>&1'
 
+  install-tparse:
+    vars:
+      TPARSE_VERSION: 0.12.1
+    desc: install tparse go test parser
+    cmds:
+      - |
+        GOBIN={{ .BUILD_ROOT }}/bin/go go install github.com/mfridman/tparse@v{{ .TPARSE_VERSION }}
+    status:
+      - '[ -f ''{{ .BUILD_ROOT }}/bin/go'' ] || command -v {{ .BUILD_ROOT }}/bin/go/tparse >/dev/null 2>&1'
+      - '[[ $({{ .BUILD_ROOT }}/bin/go/tparse --version) == tparse version:v{{.TPARSE_VERSION}} ]]'
+
   fmt:
     desc: Format Go code
     deps:
@@ -62,3 +73,10 @@ tasks:
     cmds:
       - |
         GOBIN={{ .BUILD_ROOT }}/bin/go go test --tags=integration ./...
+  
+  cover:
+    dir: "{{.BACKEND_ROOT}}"
+    desc: Run integration tests with code coverage
+    cmds:
+      - |
+        GOBIN={{ .BUILD_ROOT }}/bin/go go test --tags=integration -json -cover ./... | {{ .BUILD_ROOT }}/bin/go/tparse
