@@ -7,17 +7,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0
 
+//go:build integration
+
 package console
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"math"
+	"strconv"
 	"testing"
+	"time"
 
+	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kgo"
+	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 
+	"github.com/redpanda-data/console/backend/pkg/config"
 	"github.com/redpanda-data/console/backend/pkg/kafka"
+	"github.com/redpanda-data/console/backend/pkg/kafka/mocks"
 )
 
 func TestCalculateConsumeRequests_AllPartitions_FewNewestMessages(t *testing.T) {
@@ -198,5 +211,158 @@ func TestCalculateConsumeRequests_AllPartitions_WithFilter(t *testing.T) {
 		actual, err := svc.calculateConsumeRequests(context.Background(), table.req, marks)
 		assert.NoError(t, err)
 		assert.Equal(t, table.expected, actual, "expected other result for all partitions with filter enable. Case: ", i)
+	}
+}
+
+func Test_ListMessages(t *testing.T) {
+	ctx := context.Background()
+	log, err := zap.NewProduction()
+	assert.NoError(t, err)
+
+	cfg := config.Config{}
+	cfg.SetDefaults()
+
+	cfg.MetricsNamespace = "console_list_messages"
+	cfg.Kafka.Brokers = []string{testSeedBroker}
+
+	kafkaSvc, err := kafka.NewService(&cfg, log, cfg.MetricsNamespace)
+	assert.NoError(t, err)
+
+	svc, err := NewService(cfg.Console, log, kafkaSvc, nil, nil)
+	assert.NoError(t, err)
+
+	kafkaAdmCl := kadm.NewClient(svc.kafkaSvc.KafkaClient)
+
+	defer svc.kafkaSvc.KafkaClient.Close()
+
+	_, err = kafkaAdmCl.CreateTopic(ctx, 1, 1, nil, "console_list_messages_topic_test")
+	assert.NoError(t, err)
+
+	g := new(errgroup.Group)
+	g.Go(func() error {
+		produceOrders(t, ctx, svc.kafkaSvc.KafkaClient, "console_list_messages_topic_test")
+		return nil
+	})
+
+	err = g.Wait()
+	assert.NoError(t, err)
+
+	type test struct {
+		name        string
+		setup       func(context.Context)
+		input       *ListMessageRequest
+		expect      func(*mocks.MockIListMessagesProgress)
+		expectError string
+		cleanup     func(context.Context)
+	}
+
+	tests := []test{
+		{
+			name: "empty topic",
+			setup: func(ctx context.Context) {
+				_, err = kafkaAdmCl.CreateTopic(ctx, 1, 1, nil, "console_list_messages_empty_topic_test")
+				assert.NoError(t, err)
+			},
+			input: &ListMessageRequest{
+				TopicName:    "console_list_messages_empty_topic_test",
+				PartitionID:  -1,
+				StartOffset:  -2,
+				MessageCount: 100,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
+				mockProgress.EXPECT().OnComplete(gomock.Any(), false)
+			},
+			cleanup: func(ctx context.Context) {
+				kafkaAdmCl.DeleteTopics(ctx, "console_list_messages_empty_topic_test")
+			},
+		},
+		{
+			name: "all messages in a topic",
+			input: &ListMessageRequest{
+				TopicName:    "console_list_messages_topic_test",
+				PartitionID:  -1,
+				StartOffset:  -2,
+				MessageCount: 100,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+				var msg *kafka.TopicMessage
+				var int64Type int64
+
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
+				mockProgress.EXPECT().OnPhase("Consuming messages")
+				mockProgress.EXPECT().OnMessage(gomock.AssignableToTypeOf(msg)).Times(20)
+				mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(20)
+				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			mockCtrl := gomock.NewController(t)
+			defer mockCtrl.Finish()
+
+			mockProgress := mocks.NewMockIListMessagesProgress(mockCtrl)
+
+			if tc.setup != nil {
+				tc.setup(ctx)
+			}
+
+			if tc.expect != nil {
+				tc.expect(mockProgress)
+			}
+
+			err = svc.ListMessages(ctx, *tc.input, mockProgress)
+			if tc.expectError != "" {
+				assert.Error(t, err)
+				assert.Equal(t, tc.expectError, err.Error())
+			} else {
+				assert.NoError(t, err)
+			}
+
+			if tc.cleanup != nil {
+				tc.cleanup(ctx)
+			}
+		})
+	}
+}
+
+func produceOrders(t *testing.T, ctx context.Context, kafkaCl *kgo.Client, topic string) {
+	t.Helper()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+
+	type Order struct {
+		ID string
+	}
+
+	i := 0
+	for i < 20 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			order := Order{ID: strconv.Itoa(i)}
+			serializedOrder, err := json.Marshal(order)
+			require.NoError(t, err)
+
+			r := &kgo.Record{
+				Key:   []byte(order.ID),
+				Value: serializedOrder,
+				Topic: topic,
+			}
+			results := kafkaCl.ProduceSync(ctx, r)
+			require.NoError(t, results.FirstErr())
+
+			fmt.Println("produced:", i)
+
+			i++
+		}
 	}
 }

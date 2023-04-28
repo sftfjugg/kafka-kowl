@@ -9,6 +9,8 @@
 
 package kafka
 
+//go:generate mockgen -destination=./mocks/kafka.go -package=mocks github.com/redpanda-data/console/backend/pkg/kafka IListMessagesProgress
+
 import (
 	"context"
 	"errors"
