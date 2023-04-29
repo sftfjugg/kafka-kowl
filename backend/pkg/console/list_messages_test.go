@@ -298,6 +298,92 @@ func Test_ListMessages(t *testing.T) {
 				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
 			},
 		},
+		{
+			name: "single messages in a topic",
+			input: &ListMessageRequest{
+				TopicName:    "console_list_messages_topic_test",
+				PartitionID:  -1,
+				StartOffset:  10,
+				MessageCount: 1,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+				var int64Type int64
+
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
+				mockProgress.EXPECT().OnPhase("Consuming messages")
+				mockProgress.EXPECT().OnMessage(matchesOrder("10")).Times(1)
+				mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(1)
+				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
+			},
+		},
+		{
+			name: "5 messages in a topic",
+			input: &ListMessageRequest{
+				TopicName:    "console_list_messages_topic_test",
+				PartitionID:  -1,
+				StartOffset:  10,
+				MessageCount: 5,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+				var int64Type int64
+
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
+				mockProgress.EXPECT().OnPhase("Consuming messages")
+				mockProgress.EXPECT().OnMessage(matchesOrder("10")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("11")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("12")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("13")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("14")).Times(1)
+				mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(5)
+				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
+			},
+		},
+		{
+			name: "time stamp in future get last record",
+			input: &ListMessageRequest{
+				TopicName:      "console_list_messages_topic_test",
+				PartitionID:    -1,
+				MessageCount:   5,
+				StartTimestamp: time.Date(2010, time.November, 11, 13, 0, 0, 0, time.UTC).UnixMilli(),
+				StartOffset:    StartOffsetTimestamp,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+				var int64Type int64
+
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
+				mockProgress.EXPECT().OnPhase("Consuming messages")
+				mockProgress.EXPECT().OnMessage(matchesOrder("19")).Times(1)
+				mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(1)
+				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
+			},
+		},
+		{
+			name: "time stamp in middle get 5 records",
+			input: &ListMessageRequest{
+				TopicName:      "console_list_messages_topic_test",
+				PartitionID:    -1,
+				MessageCount:   5,
+				StartTimestamp: time.Date(2010, time.November, 10, 13, 10, 30, 0, time.UTC).UnixMilli(),
+				StartOffset:    StartOffsetTimestamp,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+				var int64Type int64
+
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
+				mockProgress.EXPECT().OnPhase("Consuming messages")
+				mockProgress.EXPECT().OnMessage(matchesOrder("11")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("12")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("13")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("14")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("15")).Times(1)
+				mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(5)
+				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -333,14 +419,48 @@ func Test_ListMessages(t *testing.T) {
 	}
 }
 
+type Order struct {
+	ID string
+}
+
+type orderMatcher struct {
+	expectedID string
+	actualID   string
+	err        string
+}
+
+func (om *orderMatcher) Matches(x interface{}) bool {
+	if m, ok := x.(*kafka.TopicMessage); ok {
+		order := Order{}
+		err := json.Unmarshal(m.Value.Payload.Payload, &order)
+		if err != nil {
+			om.err = fmt.Sprintf("marshal error: %s", err.Error())
+			return false
+		}
+
+		om.actualID = order.ID
+
+		return order.ID == om.expectedID
+	}
+
+	om.err = "value is not a TopicMessage"
+	return false
+}
+
+func (m *orderMatcher) String() string {
+	return fmt.Sprintf("has order ID %s expected order ID %s. err: %s", m.actualID, m.expectedID, m.err)
+}
+
+func matchesOrder(id string) gomock.Matcher {
+	return &orderMatcher{expectedID: id}
+}
+
 func produceOrders(t *testing.T, ctx context.Context, kafkaCl *kgo.Client, topic string) {
 	t.Helper()
 
 	ticker := time.NewTicker(100 * time.Millisecond)
 
-	type Order struct {
-		ID string
-	}
+	recordTimeStamp := time.Date(2010, time.November, 10, 13, 0, 0, 0, time.UTC)
 
 	i := 0
 	for i < 20 {
@@ -353,9 +473,10 @@ func produceOrders(t *testing.T, ctx context.Context, kafkaCl *kgo.Client, topic
 			require.NoError(t, err)
 
 			r := &kgo.Record{
-				Key:   []byte(order.ID),
-				Value: serializedOrder,
-				Topic: topic,
+				Key:       []byte(order.ID),
+				Value:     serializedOrder,
+				Topic:     topic,
+				Timestamp: recordTimeStamp,
 			}
 			results := kafkaCl.ProduceSync(ctx, r)
 			require.NoError(t, results.FirstErr())
@@ -363,6 +484,7 @@ func produceOrders(t *testing.T, ctx context.Context, kafkaCl *kgo.Client, topic
 			fmt.Println("produced:", i)
 
 			i++
+			recordTimeStamp = recordTimeStamp.Add(1 * time.Minute)
 		}
 	}
 }
