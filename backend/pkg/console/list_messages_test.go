@@ -384,6 +384,19 @@ func Test_ListMessages(t *testing.T) {
 				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
 			},
 		},
+		{
+			name: "unknown topic",
+			input: &ListMessageRequest{
+				TopicName:    "console_list_messages_topic_test_unknown_topic",
+				PartitionID:  -1,
+				StartOffset:  -2,
+				MessageCount: 100,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+			},
+			expectError: "failed to get partitions: UNKNOWN_TOPIC_OR_PARTITION: This server does not host this topic-partition.",
+		},
 	}
 
 	for _, tc := range tests {
