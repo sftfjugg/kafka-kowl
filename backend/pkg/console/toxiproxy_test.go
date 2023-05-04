@@ -3,6 +3,7 @@
 package console
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -57,7 +58,8 @@ func Test_ListMessagesProxied(t *testing.T) {
 	assert.NoError(t, err)
 
 	toxics.Register("debug", new(DebugToxic))
-	toxics.Register("kafka_parse", new(KafkaToxic))
+	toxics.Register("kafka_upstream_parse", new(KafkaUpstreamToxic))
+	toxics.Register("kafka_downstream_parse", new(KafkaDownstreamToxic))
 
 	runToxiproxyServer(t, 8474)
 
@@ -77,13 +79,17 @@ func Test_ListMessagesProxied(t *testing.T) {
 
 	fmt.Println("SEED:", testSeedBroker, "PROXY:", proxyAddr)
 
-	_, err = proxies["redpanda"].AddToxic("debug_redpanda", "debug", "upstream", 1.0, toxiproxy.Attributes{})
-	assert.NoError(t, err)
-	defer proxies["redpanda"].RemoveToxic("debug_redpanda")
+	// _, err = proxies["redpanda"].AddToxic("debug_redpanda", "debug", "upstream", 1.0, toxiproxy.Attributes{})
+	// assert.NoError(t, err)
+	// defer proxies["redpanda"].RemoveToxic("debug_redpanda")
 
-	_, err = proxies["redpanda"].AddToxic("parse_redpanda", "kafka_parse", "upstream", 1.0, toxiproxy.Attributes{})
+	_, err = proxies["redpanda"].AddToxic("parse_redpanda_upstream", "kafka_upstream_parse", "upstream", 1.0, toxiproxy.Attributes{})
 	assert.NoError(t, err)
-	defer proxies["redpanda"].RemoveToxic("parse_redpanda")
+	defer proxies["redpanda"].RemoveToxic("parse_redpanda_upstream")
+
+	_, err = proxies["redpanda"].AddToxic("parse_redpanda_downstream", "kafka_downstream_parse", "downstream", 1.0, toxiproxy.Attributes{})
+	assert.NoError(t, err)
+	defer proxies["redpanda"].RemoveToxic("parse_redpanda_downstream")
 
 	proxiedClient, err := kgo.NewClient(
 		kgo.SeedBrokers(proxyAddr),
@@ -186,9 +192,9 @@ func (t *DebugToxic) Pipe(stub *toxics.ToxicStub) {
 }
 
 // KafkaToxic attempts to print out kafka messages.
-type KafkaToxic struct{}
+type KafkaUpstreamToxic struct{}
 
-func (t *KafkaToxic) Pipe(stub *toxics.ToxicStub) {
+func (t *KafkaUpstreamToxic) Pipe(stub *toxics.ToxicStub) {
 	writer := stream.NewChanWriter(stub.Output)
 	reader := stream.NewChanReader(stub.Input)
 	reader.SetInterrupt(stub.Interrupt)
@@ -222,7 +228,7 @@ func (t *KafkaToxic) Pipe(stub *toxics.ToxicStub) {
 
 		fmt.Printf("read: %+v asked: %+v body: %+v\n", n, size, len(body))
 
-		parseKMessage(body[:n])
+		parseKRequestMessage(body[:n])
 
 		if err == stream.ErrInterrupted {
 			fmt.Println("ErrInterrupted")
@@ -242,18 +248,18 @@ func (t *KafkaToxic) Pipe(stub *toxics.ToxicStub) {
 	}
 }
 
-func parseKMessage(data []byte) {
+func parseKRequestMessage(data []byte) {
 	fmt.Println("body reading. body:", len(data))
 
 	if len(data) > 0 {
 		kreader := kbin.Reader{Src: data}
 		key := kreader.Int16()
 		version := kreader.Int16()
-		_ = kreader.Int32()
+		corrID := kreader.Int32()
 		_ = kreader.NullableString()
 		kreq := kmsg.RequestForKey(key)
 
-		fmt.Println("version:", version)
+		fmt.Println("version:", version, "key:", key, "corrID:", corrID)
 
 		kreq.SetVersion(version)
 		if kreq.IsFlexible() {
@@ -279,6 +285,114 @@ func parseKMessage(data []byte) {
 				fmt.Printf("kreq is unhandled type %T!\n", v)
 			}
 
+		}
+	}
+}
+
+// KafkaDownstreamToxic attempts to print out kafka messages.
+type KafkaDownstreamToxic struct{}
+
+func (t *KafkaDownstreamToxic) Pipe(stub *toxics.ToxicStub) {
+	writer := stream.NewChanWriter(stub.Output)
+	reader := stream.NewChanReader(stub.Input)
+	reader.SetInterrupt(stub.Interrupt)
+
+	for {
+		// read size
+		sizeBuf := make([]byte, 4)
+		var err error
+		n, err := io.ReadFull(reader, sizeBuf)
+
+		sizeBuffer := bytes.NewBuffer(sizeBuf)
+
+		if err == stream.ErrInterrupted {
+			fmt.Println("Size ErrInterrupted")
+			sizeBuffer.WriteTo(writer)
+			return
+		} else if err == io.EOF {
+			fmt.Println("Size EOF")
+			stub.Close()
+			return
+		} else if err == io.ErrUnexpectedEOF {
+			fmt.Println("Size ErrUnexpectedEOF")
+			stub.Close()
+			return
+		}
+
+		sizeBuffer.WriteTo(writer)
+
+		// read body
+		size := int32(binary.BigEndian.Uint32(sizeBuf))
+		body := make([]byte, size)
+		n, err = io.ReadFull(reader, body)
+
+		fmt.Printf("read: %+v asked: %+v body: %+v\n", n, size, len(body))
+
+		parseKResponseMessage(body[:n])
+
+		bodyBuffer := bytes.NewBuffer(body)
+
+		if err == stream.ErrInterrupted {
+			fmt.Println("ErrInterrupted")
+			bodyBuffer.WriteTo(writer)
+			return
+		} else if err == io.EOF {
+			fmt.Println("EOF")
+			stub.Close()
+			return
+		} else if err == io.ErrUnexpectedEOF {
+			fmt.Println("ErrUnexpectedEOF")
+			stub.Close()
+			return
+		}
+
+		if err != nil {
+			fmt.Println("ERR:", err.Error())
+			bodyBuffer.WriteTo(writer)
+		} else {
+			fmt.Println("ELSE CASE")
+			// t.ModifyResponse(resp)
+			bodyBuffer.WriteTo(writer)
+		}
+
+		sizeBuffer.Reset()
+		bodyBuffer.Reset()
+	}
+}
+
+func parseKResponseMessage(data []byte) {
+	fmt.Println("body reading. body:", len(data))
+
+	if len(data) > 0 {
+		kreader := kbin.Reader{Src: data}
+		corrID := kreader.Int32()
+
+		fmt.Println("corr:", corrID)
+
+		kres := kmsg.ResponseForKey(3)
+		kres.SetVersion(7)
+
+		// kreader := kbin.Reader{Src: data}
+
+		if err := kres.ReadFrom(kreader.Src); err != nil {
+			fmt.Println("err reading response:", err.Error())
+		} else {
+			fmt.Println("read response with key:", kres.Key())
+			fmt.Printf("response type: %T\n", kres)
+
+			switch v := kres.(type) {
+			case *kmsg.MetadataResponse:
+				topics := make([]string, len(v.Topics))
+				for i, t := range v.Topics {
+					t := t
+					fmt.Println(*t.Topic)
+					topics[i] = *t.Topic
+				}
+				topicsStr := strings.Join(topics, ",")
+				fmt.Printf("kres is metadata response for topic:%+v\n", topicsStr)
+			default:
+				fmt.Printf("kres is unhandled type %T!\n", v)
+			}
 		}
 	}
 }
