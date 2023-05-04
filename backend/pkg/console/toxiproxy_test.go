@@ -200,9 +200,15 @@ func (t *KafkaToxic) Pipe(stub *toxics.ToxicStub) {
 		n, err := io.ReadFull(reader, sizeBuf)
 
 		if err == stream.ErrInterrupted {
+			fmt.Println("Size ErrInterrupted")
 			writer.Write(sizeBuf[:n])
 			return
 		} else if err == io.EOF {
+			fmt.Println("Size EOF")
+			stub.Close()
+			return
+		} else if err == io.ErrUnexpectedEOF {
+			fmt.Println("Size ErrUnexpectedEOF")
 			stub.Close()
 			return
 		}
@@ -210,15 +216,24 @@ func (t *KafkaToxic) Pipe(stub *toxics.ToxicStub) {
 		writer.Write(sizeBuf[:n])
 
 		// read body
-		body := make([]byte, binary.BigEndian.Uint32(sizeBuf))
+		size := int32(binary.BigEndian.Uint32(sizeBuf))
+		body := make([]byte, size)
 		n, err = io.ReadFull(reader, body)
+
+		fmt.Printf("read: %+v asked: %+v body: %+v\n", n, size, len(body))
 
 		parseKMessage(body[:n])
 
 		if err == stream.ErrInterrupted {
+			fmt.Println("ErrInterrupted")
 			writer.Write(body[:n])
 			return
 		} else if err == io.EOF {
+			fmt.Println("EOF")
+			stub.Close()
+			return
+		} else if err == io.ErrUnexpectedEOF {
+			fmt.Println("ErrUnexpectedEOF")
 			stub.Close()
 			return
 		}
@@ -234,7 +249,11 @@ func parseKMessage(data []byte) {
 		kreader := kbin.Reader{Src: data}
 		key := kreader.Int16()
 		version := kreader.Int16()
+		_ = kreader.Int32()
+		_ = kreader.NullableString()
 		kreq := kmsg.RequestForKey(key)
+
+		fmt.Println("version:", version)
 
 		kreq.SetVersion(version)
 		if kreq.IsFlexible() {
@@ -248,19 +267,53 @@ func parseKMessage(data []byte) {
 
 			switch v := kreq.(type) {
 			case *kmsg.MetadataRequest:
-				fmt.Printf("metadata request: %#v\n", v)
-				fmt.Printf("metadata request topic 0: %#v\n", v.Topics[0])
 				topics := make([]string, len(v.Topics))
 				for i, t := range v.Topics {
 					t := t
 					fmt.Println(*t.Topic)
 					topics[i] = *t.Topic
 				}
-				fmt.Printf("kreq is metadata request for topic:%+v\n", strings.Join(topics, ","))
+				topicsStr := strings.Join(topics, ",")
+				fmt.Printf("kreq is metadata request for topic:%+v\n", topicsStr)
 			default:
 				fmt.Printf("kreq is unhandled type %T!\n", v)
 			}
 
 		}
 	}
+}
+
+func serializeResponse(r kmsg.Response, correlationID int32, clientID *string) []byte {
+	dst := make([]byte, 0, 100)
+	dst = append(dst, 0, 0, 0, 0) // reserve length
+	k := r.Key()
+	v := r.GetVersion()
+	dst = kbin.AppendInt16(dst, k)
+	dst = kbin.AppendInt16(dst, v)
+	dst = kbin.AppendInt32(dst, correlationID)
+	if k == 7 && v == 0 {
+		return dst
+	}
+
+	// Even with flexible versions, we do not use a compact client id.
+	// Clients issue ApiVersions immediately before knowing the broker
+	// version, and old brokers will not be able to understand a compact
+	// client id.
+	dst = kbin.AppendNullableString(dst, clientID)
+
+	// The flexible tags end the request header, and then begins the
+	// request body.
+	if r.IsFlexible() {
+		var numTags uint8
+		dst = append(dst, numTags)
+		if numTags != 0 {
+			// TODO when tags are added
+		}
+	}
+
+	// Now the request body.
+	dst = r.AppendTo(dst)
+
+	kbin.AppendInt32(dst[:0], int32(len(dst[4:])))
+	return dst
 }
