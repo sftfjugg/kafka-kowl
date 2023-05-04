@@ -4,11 +4,13 @@ package console
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kbin"
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -29,6 +32,8 @@ import (
 )
 
 func Test_ListMessagesProxied(t *testing.T) {
+	fmt.Printf("\n\nListMessagesProxied\n")
+
 	ctx := context.Background()
 
 	trueClient, err := kgo.NewClient(
@@ -52,6 +57,7 @@ func Test_ListMessagesProxied(t *testing.T) {
 	assert.NoError(t, err)
 
 	toxics.Register("debug", new(DebugToxic))
+	toxics.Register("kafka_parse", new(KafkaToxic))
 
 	runToxiproxyServer(t, 8474)
 
@@ -71,9 +77,13 @@ func Test_ListMessagesProxied(t *testing.T) {
 
 	fmt.Println("SEED:", testSeedBroker, "PROXY:", proxyAddr)
 
-	_, err = proxies["redpanda"].AddToxic("debug_redpanda", "debug", "downstream", 1.0, toxiproxy.Attributes{})
+	_, err = proxies["redpanda"].AddToxic("debug_redpanda", "debug", "upstream", 1.0, toxiproxy.Attributes{})
 	assert.NoError(t, err)
 	defer proxies["redpanda"].RemoveToxic("debug_redpanda")
+
+	_, err = proxies["redpanda"].AddToxic("parse_redpanda", "kafka_parse", "upstream", 1.0, toxiproxy.Attributes{})
+	assert.NoError(t, err)
+	defer proxies["redpanda"].RemoveToxic("parse_redpanda")
 
 	proxiedClient, err := kgo.NewClient(
 		kgo.SeedBrokers(proxyAddr),
@@ -94,7 +104,7 @@ func Test_ListMessagesProxied(t *testing.T) {
 		assert.NoError(t, err)
 	}
 
-	fmt.Printf("received '%v' topics and '%v' brokers", len(res.Topics), len(res.Brokers))
+	fmt.Printf("received '%v' topics and '%v' brokers\n", len(res.Topics), len(res.Brokers))
 
 	assert.Fail(t, "FOO FAIL")
 }
@@ -156,9 +166,11 @@ func (t *DebugToxic) Pipe(stub *toxics.ToxicStub) {
 	writer := stream.NewChanWriter(stub.Output)
 	reader := stream.NewChanReader(stub.Input)
 	reader.SetInterrupt(stub.Interrupt)
+
 	for {
 		n, err := reader.Read(buf)
 		log.Printf("-- [DebugToxic] Processed %d bytes\n", n)
+
 		if err == stream.ErrInterrupted {
 			writer.Write(buf[:n])
 			return
@@ -166,8 +178,89 @@ func (t *DebugToxic) Pipe(stub *toxics.ToxicStub) {
 			stub.Close()
 			return
 		}
+
 		t.PrintHex(buf[:n])
+
 		writer.Write(buf[:n])
 	}
+}
 
+// KafkaToxic attempts to print out kafka messages.
+type KafkaToxic struct{}
+
+func (t *KafkaToxic) Pipe(stub *toxics.ToxicStub) {
+	writer := stream.NewChanWriter(stub.Output)
+	reader := stream.NewChanReader(stub.Input)
+	reader.SetInterrupt(stub.Interrupt)
+
+	for {
+		// read size
+		sizeBuf := make([]byte, 4)
+		var err error
+		n, err := io.ReadFull(reader, sizeBuf)
+
+		if err == stream.ErrInterrupted {
+			writer.Write(sizeBuf[:n])
+			return
+		} else if err == io.EOF {
+			stub.Close()
+			return
+		}
+
+		writer.Write(sizeBuf[:n])
+
+		// read body
+		body := make([]byte, binary.BigEndian.Uint32(sizeBuf))
+		n, err = io.ReadFull(reader, body)
+
+		parseKMessage(body[:n])
+
+		if err == stream.ErrInterrupted {
+			writer.Write(body[:n])
+			return
+		} else if err == io.EOF {
+			stub.Close()
+			return
+		}
+
+		writer.Write(body[:n])
+	}
+}
+
+func parseKMessage(data []byte) {
+	fmt.Println("body reading. body:", len(data))
+
+	if len(data) > 0 {
+		kreader := kbin.Reader{Src: data}
+		key := kreader.Int16()
+		version := kreader.Int16()
+		kreq := kmsg.RequestForKey(key)
+
+		kreq.SetVersion(version)
+		if kreq.IsFlexible() {
+			kmsg.SkipTags(&kreader)
+		}
+		if err := kreq.ReadFrom(kreader.Src); err != nil {
+			fmt.Println("err reading request:", err.Error())
+		} else {
+			fmt.Println("read request with key:", kreq.Key())
+			fmt.Printf("request type: %T\n", kreq)
+
+			switch v := kreq.(type) {
+			case *kmsg.MetadataRequest:
+				fmt.Printf("metadata request: %#v\n", v)
+				fmt.Printf("metadata request topic 0: %#v\n", v.Topics[0])
+				topics := make([]string, len(v.Topics))
+				for i, t := range v.Topics {
+					t := t
+					fmt.Println(*t.Topic)
+					topics[i] = *t.Topic
+				}
+				fmt.Printf("kreq is metadata request for topic:%+v\n", strings.Join(topics, ","))
+			default:
+				fmt.Printf("kreq is unhandled type %T!\n", v)
+			}
+
+		}
+	}
 }
