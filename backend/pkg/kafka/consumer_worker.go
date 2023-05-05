@@ -23,7 +23,7 @@ func (s *Service) startMessageWorker(ctx context.Context, wg *sync.WaitGroup, is
 	defer wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
-			s.logger.Error("recovered from panic in message worker", zap.Any("error", r))
+			s.Logger.Error("recovered from panic in message worker", zap.Any("error", r))
 		}
 	}()
 
@@ -50,7 +50,7 @@ func (s *Service) startMessageWorker(ctx context.Context, wg *sync.WaitGroup, is
 		}
 
 		// Run Interpreter filter and check if message passes the filter
-		deserializedRec := s.deserializer.DeserializeRecord(record)
+		deserializedRec := s.Deserializer.DeserializeRecord(record)
 
 		headersByKey := make(map[string]interface{}, len(deserializedRec.Headers))
 		headers := make([]MessageHeader, 0)
@@ -75,7 +75,7 @@ func (s *Service) startMessageWorker(ctx context.Context, wg *sync.WaitGroup, is
 		isOK, err := isMessageOK(args)
 		var errMessage string
 		if err != nil {
-			s.logger.Debug("failed to check if message is ok", zap.Error(err))
+			s.Logger.Debug("failed to check if message is ok", zap.Error(err))
 			errMessage = fmt.Sprintf("Failed to check if message is ok (partition: '%v', offset: '%v'). Err: %v", record.Partition, record.Offset, err)
 		}
 

@@ -51,16 +51,16 @@ type ClientRequestor interface {
 
 // Service acts as interface to interact with the Kafka Cluster
 type Service struct {
-	config *config.Config
-	logger *zap.Logger
+	Config *config.Config
+	Logger *zap.Logger
 
-	kafkaClientHooks kgo.Hook
+	KafkaClientHooks kgo.Hook
 	KafkaClient      ClientRequestor
 	KafkaAdmClient   *kadm.Client
 	SchemaService    *schema.Service
-	protoService     *proto.Service
-	deserializer     deserializer
-	metricsNamespace string
+	ProtoService     *proto.Service
+	Deserializer     deserializer
+	MetricsNamespace string
 
 	clientGenerator ClientGeneratorFunc
 }
@@ -180,22 +180,22 @@ func NewService(cfg *config.Config, logger *zap.Logger, metricsNamespace string,
 	}
 
 	service := &Service{
-		config:           cfg,
-		logger:           logger,
-		kafkaClientHooks: clientHooks,
+		Config:           cfg,
+		Logger:           logger,
+		KafkaClientHooks: clientHooks,
 		KafkaClient:      kafkaClient,
 		KafkaAdmClient:   kadm.NewClient(kafkaClient),
 		SchemaService:    schemaSvc,
-		protoService:     protoSvc,
-		deserializer: deserializer{
+		ProtoService:     protoSvc,
+		Deserializer: deserializer{
 			SchemaService:  schemaSvc,
 			ProtoService:   protoSvc,
 			MsgPackService: msgPackSvc,
 		},
-		metricsNamespace: metricsNamespace,
+		MetricsNamespace: metricsNamespace,
 	}
 
-	service.clientGenerator = service.newKgoClient
+	service.clientGenerator = service.NewKgoClient
 
 	for _, option := range options {
 		option(service)
@@ -207,15 +207,15 @@ func NewService(cfg *config.Config, logger *zap.Logger, metricsNamespace string,
 // Start starts all the (background) tasks which are required for this service to work properly. If any of these
 // tasks can not be setup an error will be returned which will cause the application to exit.
 func (s *Service) Start() error {
-	if s.protoService == nil {
+	if s.ProtoService == nil {
 		return nil
 	}
-	return s.protoService.Start()
+	return s.ProtoService.Start()
 }
 
 // NewKgoClient creates a new Kafka client based on the stored Kafka configuration.
-func (s *Service) newKgoClient(additionalOpts ...kgo.Opt) (ClientRequestor, error) {
-	kgoOpts, err := NewKgoConfig(&s.config.Kafka, s.logger, s.kafkaClientHooks)
+func (s *Service) NewKgoClient(additionalOpts ...kgo.Opt) (ClientRequestor, error) {
+	kgoOpts, err := NewKgoConfig(&s.Config.Kafka, s.Logger, s.KafkaClientHooks)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create a valid kafka client config: %w", err)
 	}

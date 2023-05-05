@@ -128,7 +128,7 @@ func (s *Service) FetchMessages(ctx context.Context, progress IListMessagesProgr
 		// Setup JavaScript interpreter
 		isMessageOK, err := s.setupInterpreter(consumeReq.FilterInterpreterCode)
 		if err != nil {
-			s.logger.Error("failed to setup interpreter", zap.Error(err))
+			s.Logger.Error("failed to setup interpreter", zap.Error(err))
 			progress.OnError(fmt.Sprintf("failed to setup interpreter: %v", err.Error()))
 			return err
 		}
@@ -191,7 +191,7 @@ func (s *Service) consumeKafkaMessages(ctx context.Context, client ClientRequest
 				// We cancel the context when we know the search is complete, hence this is expected and
 				// should not be logged as error in this case.
 				if !errors.Is(err.Err, context.Canceled) {
-					s.logger.Error("errors while fetching records",
+					s.Logger.Error("errors while fetching records",
 						zap.String("topic_name", err.Topic),
 						zap.Int32("partition", err.Partition),
 						zap.Error(err.Err))

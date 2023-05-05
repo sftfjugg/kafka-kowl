@@ -20,7 +20,7 @@ import (
 func (s *Service) ListConsumerGroupOffsetsBulk(ctx context.Context, groups []string) kadm.FetchOffsetsResponses {
 	res := s.KafkaAdmClient.FetchManyOffsets(ctx, groups...)
 	res.EachError(func(shardRes kadm.FetchOffsetsResponse) {
-		s.logger.Warn("failed to fetch group offset",
+		s.Logger.Warn("failed to fetch group offset",
 			zap.String("group", shardRes.Group),
 			zap.Error(shardRes.Err))
 	})
