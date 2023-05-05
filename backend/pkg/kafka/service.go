@@ -27,23 +27,81 @@ import (
 	"github.com/redpanda-data/console/backend/pkg/schema"
 )
 
+// ClientRequestor is our mocked interface for kgo.Client that we can use for added flexibility
+// for mocking tests
+// Can we generate this using iface maker automatically from kgo.Client struct ?
+type ClientRequestor interface {
+	// Request issues a Request and returns either a Response or an error.
+	Request(context.Context, kmsg.Request) (kmsg.Response, error)
+
+	RequestSharded(context.Context, kmsg.Request) []kgo.ResponseShard
+
+	PollFetches(ctx context.Context) kgo.Fetches
+
+	Close()
+
+	Flush(context.Context) error
+
+	BeginTransaction() error
+
+	Produce(context.Context, *kgo.Record, func(*kgo.Record, error))
+
+	EndTransaction(ctx context.Context, commit kgo.TransactionEndTry) error
+}
+
 // Service acts as interface to interact with the Kafka Cluster
 type Service struct {
-	Config *config.Config
-	Logger *zap.Logger
+	config *config.Config
+	logger *zap.Logger
 
-	KafkaClientHooks kgo.Hook
-	KafkaClient      *kgo.Client
+	kafkaClientHooks kgo.Hook
+	KafkaClient      ClientRequestor
 	KafkaAdmClient   *kadm.Client
 	SchemaService    *schema.Service
-	ProtoService     *proto.Service
-	Deserializer     deserializer
-	MetricsNamespace string
+	protoService     *proto.Service
+	deserializer     deserializer
+	metricsNamespace string
+
+	clientGenerator ClientGeneratorFunc
 }
+
+// ClientGeneratorFunc is function for creating client
+type ClientGeneratorFunc func(...kgo.Opt) (ClientRequestor, error)
+
+// ServiceOption is function for setting services options
+type ServiceOption func(*Service)
+
+// WithClient sets the client
+func WithClient(cr ClientRequestor) ServiceOption {
+	return func(s *Service) {
+		s.KafkaClient = cr
+	}
+}
+
+// WithClientGenerator sets the client generator
+func WithClientGenerator(cg ClientGeneratorFunc) ServiceOption {
+	return func(s *Service) {
+		s.clientGenerator = cg
+	}
+}
+
+// // WithLogger sets the logger
+// func WithLogger(logger *zap.Logger) ServiceOption {
+// 	return func(s *Service) {
+// 		s.logger = logger
+// 	}
+// }
+
+// // WithMetricsNamespace sets metrics namespace
+// func WithMetricsNamespace(metricsNamespace string) ServiceOption {
+// 	return func(s *Service) {
+// 		s.metricsNamespace = metricsNamespace
+// 	}
+// }
 
 // NewService creates a new Kafka service and immediately checks connectivity to all components. If any of these external
 // dependencies fail an error wil be returned.
-func NewService(cfg *config.Config, logger *zap.Logger, metricsNamespace string) (*Service, error) {
+func NewService(cfg *config.Config, logger *zap.Logger, metricsNamespace string, options ...ServiceOption) (*Service, error) {
 	// Kafka client
 	hooksChildLogger := logger.With(zap.String("source", "kafka_client_hooks"))
 	clientHooks := newClientHooks(hooksChildLogger, metricsNamespace)
@@ -121,35 +179,43 @@ func NewService(cfg *config.Config, logger *zap.Logger, metricsNamespace string)
 		}
 	}
 
-	return &Service{
-		Config:           cfg,
-		Logger:           logger,
-		KafkaClientHooks: clientHooks,
+	service := &Service{
+		config:           cfg,
+		logger:           logger,
+		kafkaClientHooks: clientHooks,
 		KafkaClient:      kafkaClient,
 		KafkaAdmClient:   kadm.NewClient(kafkaClient),
 		SchemaService:    schemaSvc,
-		ProtoService:     protoSvc,
-		Deserializer: deserializer{
+		protoService:     protoSvc,
+		deserializer: deserializer{
 			SchemaService:  schemaSvc,
 			ProtoService:   protoSvc,
 			MsgPackService: msgPackSvc,
 		},
-		MetricsNamespace: metricsNamespace,
-	}, nil
+		metricsNamespace: metricsNamespace,
+	}
+
+	service.clientGenerator = service.newKgoClient
+
+	for _, option := range options {
+		option(service)
+	}
+
+	return service, nil
 }
 
 // Start starts all the (background) tasks which are required for this service to work properly. If any of these
 // tasks can not be setup an error will be returned which will cause the application to exit.
 func (s *Service) Start() error {
-	if s.ProtoService == nil {
+	if s.protoService == nil {
 		return nil
 	}
-	return s.ProtoService.Start()
+	return s.protoService.Start()
 }
 
 // NewKgoClient creates a new Kafka client based on the stored Kafka configuration.
-func (s *Service) NewKgoClient(additionalOpts ...kgo.Opt) (*kgo.Client, error) {
-	kgoOpts, err := NewKgoConfig(&s.Config.Kafka, s.Logger, s.KafkaClientHooks)
+func (s *Service) newKgoClient(additionalOpts ...kgo.Opt) (ClientRequestor, error) {
+	kgoOpts, err := NewKgoConfig(&s.config.Kafka, s.logger, s.kafkaClientHooks)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create a valid kafka client config: %w", err)
 	}
@@ -165,7 +231,7 @@ func (s *Service) NewKgoClient(additionalOpts ...kgo.Opt) (*kgo.Client, error) {
 
 // testConnection tries to fetch Broker metadata and prints some information if connection succeeds. An error will be
 // returned if connecting fails.
-func testConnection(logger *zap.Logger, client *kgo.Client, timeout time.Duration) error {
+func testConnection(logger *zap.Logger, client ClientRequestor, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 

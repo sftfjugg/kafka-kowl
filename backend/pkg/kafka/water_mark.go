@@ -53,7 +53,7 @@ func (s *Service) GetPartitionMarksBulk(ctx context.Context, topicPartitions map
 
 	err := g.Wait()
 	if err != nil {
-		s.Logger.Error("failed to request partition marks in bulk", zap.Error(err))
+		s.logger.Error("failed to request partition marks in bulk", zap.Error(err))
 		return nil, fmt.Errorf("failed to request PartitionMarks: %w", err)
 	}
 
@@ -149,7 +149,7 @@ func (s *Service) ListOffsets(ctx context.Context, topicPartitions map[string][]
 		if err != nil {
 			shardReq, ok := shard.Req.(*kmsg.ListOffsetsRequest)
 			if !ok {
-				s.Logger.Fatal("failed to cast ListOffsetsRequest")
+				s.logger.Fatal("failed to cast ListOffsetsRequest")
 			}
 
 			// Create an entry for each failed shard so that we each failed partition is visible too
@@ -174,7 +174,7 @@ func (s *Service) ListOffsets(ctx context.Context, topicPartitions map[string][]
 		// Create an entry for each successfully requested partition
 		res, ok := shard.Resp.(*kmsg.ListOffsetsResponse)
 		if !ok {
-			s.Logger.Fatal("failed to cast ListOffsetsResponse")
+			s.logger.Fatal("failed to cast ListOffsetsResponse")
 		}
 		for _, topic := range res.Topics {
 			partitions, ok := partitionsByTopic[topic.Topic]

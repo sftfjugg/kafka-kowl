@@ -11,6 +11,8 @@ package kafka
 
 //go:generate mockgen -destination=./mocks/kafka.go -package=mocks github.com/redpanda-data/console/backend/pkg/kafka IListMessagesProgress
 
+//go:generate mockgen -destination=./mocks/client.go -package=mocks github.com/redpanda-data/console/backend/pkg/kafka ClientRequestor
+
 import (
 	"context"
 	"errors"
@@ -102,7 +104,7 @@ func (s *Service) FetchMessages(ctx context.Context, progress IListMessagesProgr
 		partitionOffsets[consumeReq.TopicName][req.PartitionID] = offset
 	}
 
-	client, err := s.NewKgoClient(kgo.ConsumePartitions(partitionOffsets))
+	client, err := s.clientGenerator(kgo.ConsumePartitions(partitionOffsets))
 	if err != nil {
 		return fmt.Errorf("failed to create new kafka client: %w", err)
 	}
@@ -126,7 +128,7 @@ func (s *Service) FetchMessages(ctx context.Context, progress IListMessagesProgr
 		// Setup JavaScript interpreter
 		isMessageOK, err := s.setupInterpreter(consumeReq.FilterInterpreterCode)
 		if err != nil {
-			s.Logger.Error("failed to setup interpreter", zap.Error(err))
+			s.logger.Error("failed to setup interpreter", zap.Error(err))
 			progress.OnError(fmt.Sprintf("failed to setup interpreter: %v", err.Error()))
 			return err
 		}
@@ -174,7 +176,7 @@ func (s *Service) FetchMessages(ctx context.Context, progress IListMessagesProgr
 	return nil
 }
 
-func (s *Service) consumeKafkaMessages(ctx context.Context, client *kgo.Client, consumeReq TopicConsumeRequest, jobs chan<- *kgo.Record) {
+func (s *Service) consumeKafkaMessages(ctx context.Context, client ClientRequestor, consumeReq TopicConsumeRequest, jobs chan<- *kgo.Record) {
 	defer close(jobs)
 	defer client.Close()
 
@@ -189,7 +191,7 @@ func (s *Service) consumeKafkaMessages(ctx context.Context, client *kgo.Client, 
 				// We cancel the context when we know the search is complete, hence this is expected and
 				// should not be logged as error in this case.
 				if !errors.Is(err.Err, context.Canceled) {
-					s.Logger.Error("errors while fetching records",
+					s.logger.Error("errors while fetching records",
 						zap.String("topic_name", err.Topic),
 						zap.Int32("partition", err.Partition),
 						zap.Error(err.Err))

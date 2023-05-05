@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/kmsg"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
@@ -225,22 +227,21 @@ func Test_ListMessages(t *testing.T) {
 	cfg.MetricsNamespace = "console_list_messages"
 	cfg.Kafka.Brokers = []string{testSeedBroker}
 
-	kafkaSvc, err := kafka.NewService(&cfg, log, cfg.MetricsNamespace)
+	defaultKafkaSvc, err := kafka.NewService(&cfg, log, cfg.MetricsNamespace)
 	assert.NoError(t, err)
 
-	svc, err := NewService(cfg.Console, log, kafkaSvc, nil, nil)
-	assert.NoError(t, err)
+	kClient := defaultKafkaSvc.KafkaClient.(*kgo.Client)
 
-	kafkaAdmCl := kadm.NewClient(svc.kafkaSvc.KafkaClient)
+	kafkaAdmCl := kadm.NewClient(kClient)
 
-	defer svc.kafkaSvc.KafkaClient.Close()
+	defer defaultKafkaSvc.KafkaClient.Close()
 
 	_, err = kafkaAdmCl.CreateTopic(ctx, 1, 1, nil, "console_list_messages_topic_test")
 	assert.NoError(t, err)
 
 	g := new(errgroup.Group)
 	g.Go(func() error {
-		produceOrders(t, ctx, svc.kafkaSvc.KafkaClient, "console_list_messages_topic_test")
+		produceOrders(t, ctx, kClient, "console_list_messages_topic_test")
 		return nil
 	})
 
@@ -248,12 +249,13 @@ func Test_ListMessages(t *testing.T) {
 	assert.NoError(t, err)
 
 	type test struct {
-		name        string
-		setup       func(context.Context)
-		input       *ListMessageRequest
-		expect      func(*mocks.MockIListMessagesProgress)
-		expectError string
-		cleanup     func(context.Context)
+		name          string
+		setup         func(context.Context)
+		input         *ListMessageRequest
+		expect        func(*mocks.MockIListMessagesProgress, *mocks.MockClientRequestor)
+		expectError   string
+		cleanup       func(context.Context)
+		useFakeClient bool
 	}
 
 	tests := []test{
@@ -269,7 +271,7 @@ func Test_ListMessages(t *testing.T) {
 				StartOffset:  -2,
 				MessageCount: 100,
 			},
-			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
 				mockProgress.EXPECT().OnPhase("Get Partitions")
 				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
 				mockProgress.EXPECT().OnComplete(gomock.Any(), false)
@@ -286,7 +288,7 @@ func Test_ListMessages(t *testing.T) {
 				StartOffset:  -2,
 				MessageCount: 100,
 			},
-			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
 				var msg *kafka.TopicMessage
 				var int64Type int64
 
@@ -306,7 +308,7 @@ func Test_ListMessages(t *testing.T) {
 				StartOffset:  10,
 				MessageCount: 1,
 			},
-			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
 				var int64Type int64
 
 				mockProgress.EXPECT().OnPhase("Get Partitions")
@@ -325,7 +327,7 @@ func Test_ListMessages(t *testing.T) {
 				StartOffset:  10,
 				MessageCount: 5,
 			},
-			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
 				var int64Type int64
 
 				mockProgress.EXPECT().OnPhase("Get Partitions")
@@ -349,7 +351,7 @@ func Test_ListMessages(t *testing.T) {
 				StartTimestamp: time.Date(2010, time.November, 11, 13, 0, 0, 0, time.UTC).UnixMilli(),
 				StartOffset:    StartOffsetTimestamp,
 			},
-			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
 				var int64Type int64
 
 				mockProgress.EXPECT().OnPhase("Get Partitions")
@@ -369,7 +371,7 @@ func Test_ListMessages(t *testing.T) {
 				StartTimestamp: time.Date(2010, time.November, 10, 13, 10, 30, 0, time.UTC).UnixMilli(),
 				StartOffset:    StartOffsetTimestamp,
 			},
-			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
 				var int64Type int64
 
 				mockProgress.EXPECT().OnPhase("Get Partitions")
@@ -392,10 +394,52 @@ func Test_ListMessages(t *testing.T) {
 				StartOffset:  -2,
 				MessageCount: 100,
 			},
-			expect: func(mockProgress *mocks.MockIListMessagesProgress) {
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
 				mockProgress.EXPECT().OnPhase("Get Partitions")
 			},
 			expectError: "failed to get partitions: UNKNOWN_TOPIC_OR_PARTITION: This server does not host this topic-partition.",
+		},
+		{
+			name:          "mock",
+			useFakeClient: true,
+			input: &ListMessageRequest{
+				TopicName:    "console_list_messages_empty_topic_test_mock",
+				PartitionID:  -1,
+				StartOffset:  -2,
+				MessageCount: 100,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
+				metadata := kmsg.NewMetadataRequest()
+
+				mdret := kmsg.NewMetadataResponse()
+				mdret.Topics = make([]kmsg.MetadataResponseTopic, 1)
+				mdret.Topics[0] = kmsg.NewMetadataResponseTopic()
+				mdret.Topics[0].Topic = kmsg.StringPtr("console_list_messages_empty_topic_test_mock")
+
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+				mockRequestor.EXPECT().Request(
+					gomock.Any(),
+					gomock.AssignableToTypeOf(&metadata),
+				).Times(1).Return(&mdret, nil)
+
+				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
+				loreq := kmsg.NewListOffsetsRequest()
+				lores := kmsg.NewListOffsetsResponse()
+				mockRequestor.EXPECT().RequestSharded(
+					gomock.Any(),
+					gomock.AssignableToTypeOf(&loreq),
+				).Times(2).Return([]kgo.ResponseShard{
+					{
+						Req:  &loreq,
+						Resp: &lores,
+					},
+				})
+
+				mockProgress.EXPECT().OnComplete(gomock.Any(), false)
+			},
+			cleanup: func(ctx context.Context) {
+				kafkaAdmCl.DeleteTopics(ctx, "console_list_messages_empty_topic_test")
+			},
 		},
 	}
 
@@ -413,9 +457,29 @@ func Test_ListMessages(t *testing.T) {
 				tc.setup(ctx)
 			}
 
-			if tc.expect != nil {
-				tc.expect(mockProgress)
+			mockClient := mocks.NewMockClientRequestor(mockCtrl)
+			mockClientGenerator := func(...kgo.Opt) (kafka.ClientRequestor, error) {
+				return mockClient, nil
 			}
+
+			if tc.expect != nil {
+				tc.expect(mockProgress, mockClient)
+			}
+
+			var kafkaSvc *kafka.Service
+
+			kafkaSvc = defaultKafkaSvc
+			if tc.useFakeClient {
+				metricName := strings.ReplaceAll(tc.name, " ", "")
+				kafkaSvc, err = kafka.NewService(&cfg, log, metricName,
+					kafka.WithClient(mockClient),
+					kafka.WithClientGenerator(mockClientGenerator),
+				)
+
+			}
+
+			svc, err := NewService(cfg.Console, log, kafkaSvc, nil, nil)
+			assert.NoError(t, err)
 
 			err = svc.ListMessages(ctx, *tc.input, mockProgress)
 			if tc.expectError != "" {

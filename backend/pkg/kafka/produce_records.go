@@ -61,7 +61,7 @@ func (s *Service) ProduceRecords(
 		additionalKgoOpts = append(additionalKgoOpts, kgo.TransactionalID(uuid.New().String()))
 	}
 
-	client, err := s.NewKgoClient(additionalKgoOpts...)
+	client, err := s.clientGenerator(additionalKgoOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new kafka client: %w", err)
 	}

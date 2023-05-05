@@ -27,10 +27,10 @@ func (s *Service) IsHealthy(ctx context.Context) error {
 	}
 	kres, err := req.RequestWith(ctx, s.KafkaClient)
 	if err != nil {
-		s.Logger.Error("failed to request metadata in health check", zap.Error(err))
+		s.logger.Error("failed to request metadata in health check", zap.Error(err))
 		return fmt.Errorf("failed to request metadata: %w", err)
 	}
-	s.Logger.Debug("kafka cluster health check succeeded",
+	s.logger.Debug("kafka cluster health check succeeded",
 		zap.Int("broker_count", len(kres.Brokers)),
 	)
 
