@@ -197,6 +197,8 @@ func NewService(cfg *config.Config, logger *zap.Logger, metricsNamespace string,
 
 	service.clientGenerator = service.NewKgoClient
 
+	// this may overwrite members initialized above
+	// such as custom client or client generator function
 	for _, option := range options {
 		option(service)
 	}
