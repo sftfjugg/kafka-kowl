@@ -431,6 +431,48 @@ func Test_ListMessages(t *testing.T) {
 				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
 			},
 		},
+		{
+			name:          "metadata topic error",
+			useFakeClient: true,
+			input: &ListMessageRequest{
+				TopicName:    "console_list_messages_topic_test_mock",
+				PartitionID:  -1,
+				StartOffset:  -2,
+				MessageCount: 100,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+
+				mdReq := kmsg.NewMetadataRequest()
+				mdReq.Topics = make([]kmsg.MetadataRequestTopic, 1)
+				topicReq := kmsg.NewMetadataRequestTopic()
+				topicReq.Topic = kadm.StringPtr("console_list_messages_topic_test_mock")
+				mdReq.Topics[0] = topicReq
+
+				mockRequestor.EXPECT().Request(
+					gomock.Any(),
+					&mdReq,
+				).Times(1).DoAndReturn(func(mockCtx context.Context, req *kmsg.MetadataRequest) (*kmsg.MetadataResponse, error) {
+					mdRes := kmsg.NewMetadataResponse()
+					mdRes.Version = 7
+					mdRes.Topics = make([]kmsg.MetadataResponseTopic, 1)
+					mdRes.Topics[0] = kmsg.NewMetadataResponseTopic()
+					mdRes.Topics[0].Topic = kmsg.StringPtr("console_list_messages_topic_test_mock")
+					mdRes.Topics[0].ErrorCode = 5 // LEADER_NOT_AVAILABLE
+					mdRes.Topics[0].Partitions = make([]kmsg.MetadataResponseTopicPartition, 1)
+					mdRes.Topics[0].Partitions[0].Partition = 0
+					mdRes.Topics[0].Partitions[0].Leader = 0
+					mdRes.Topics[0].Partitions[0].LeaderEpoch = 1
+					mdRes.Topics[0].Partitions[0].Replicas = make([]int32, 1)
+					mdRes.Topics[0].Partitions[0].Replicas[0] = 0
+					mdRes.Topics[0].Partitions[0].ISR = make([]int32, 1)
+					mdRes.Topics[0].Partitions[0].ISR[0] = 0
+
+					return &mdRes, nil
+				})
+			},
+			expectError: "failed to get partitions: LEADER_NOT_AVAILABLE: There is no leader for this topic-partition as we are in the middle of a leadership election.",
+		},
 	}
 
 	for _, tc := range tests {
@@ -460,10 +502,6 @@ func Test_ListMessages(t *testing.T) {
 
 			kafkaSvc = defaultKafkaSvc
 			if tc.useFakeClient {
-				fmt.Println()
-				fmt.Println("!!! MOCK TEST !!!")
-				fmt.Println()
-
 				metricName := strings.ReplaceAll(tc.name, " ", "")
 				kafkaSvc, err = kafka.NewService(&cfg, log, metricName,
 					kafka.WithClient(mockClient),
