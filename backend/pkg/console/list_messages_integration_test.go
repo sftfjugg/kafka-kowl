@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,47 +78,47 @@ func Test_ListMessages(t *testing.T) {
 	}
 
 	tests := []test{
-		// {
-		// 	name: "empty topic",
-		// 	setup: func(ctx context.Context) {
-		// 		_, err = kafkaAdmCl.CreateTopic(ctx, 1, 1, nil, "console_list_messages_empty_topic_test")
-		// 		assert.NoError(t, err)
-		// 	},
-		// 	input: &ListMessageRequest{
-		// 		TopicName:    "console_list_messages_empty_topic_test",
-		// 		PartitionID:  -1,
-		// 		StartOffset:  -2,
-		// 		MessageCount: 100,
-		// 	},
-		// 	expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
-		// 		mockProgress.EXPECT().OnPhase("Get Partitions")
-		// 		mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
-		// 		mockProgress.EXPECT().OnComplete(gomock.Any(), false)
-		// 	},
-		// 	cleanup: func(ctx context.Context) {
-		// 		kafkaAdmCl.DeleteTopics(ctx, "console_list_messages_empty_topic_test")
-		// 	},
-		// },
-		// {
-		// 	name: "all messages in a topic",
-		// 	input: &ListMessageRequest{
-		// 		TopicName:    "console_list_messages_topic_test",
-		// 		PartitionID:  -1,
-		// 		StartOffset:  -2,
-		// 		MessageCount: 100,
-		// 	},
-		// 	expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
-		// 		var msg *kafka.TopicMessage
-		// 		var int64Type int64
+		{
+			name: "empty topic",
+			setup: func(ctx context.Context) {
+				_, err = kafkaAdmCl.CreateTopic(ctx, 1, 1, nil, "console_list_messages_empty_topic_test")
+				assert.NoError(t, err)
+			},
+			input: &ListMessageRequest{
+				TopicName:    "console_list_messages_empty_topic_test",
+				PartitionID:  -1,
+				StartOffset:  -2,
+				MessageCount: 100,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
+				mockProgress.EXPECT().OnComplete(gomock.Any(), false)
+			},
+			cleanup: func(ctx context.Context) {
+				kafkaAdmCl.DeleteTopics(ctx, "console_list_messages_empty_topic_test")
+			},
+		},
+		{
+			name: "all messages in a topic",
+			input: &ListMessageRequest{
+				TopicName:    "console_list_messages_topic_test",
+				PartitionID:  -1,
+				StartOffset:  -2,
+				MessageCount: 100,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
+				var msg *kafka.TopicMessage
+				var int64Type int64
 
-		// 		mockProgress.EXPECT().OnPhase("Get Partitions")
-		// 		mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
-		// 		mockProgress.EXPECT().OnPhase("Consuming messages")
-		// 		mockProgress.EXPECT().OnMessage(gomock.AssignableToTypeOf(msg)).Times(20)
-		// 		mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(20)
-		// 		mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
-		// 	},
-		// },
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
+				mockProgress.EXPECT().OnPhase("Consuming messages")
+				mockProgress.EXPECT().OnMessage(gomock.AssignableToTypeOf(msg)).Times(20)
+				mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(20)
+				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
+			},
+		},
 		{
 			name: "single messages in a topic",
 			input: &ListMessageRequest{
@@ -137,86 +138,86 @@ func Test_ListMessages(t *testing.T) {
 				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
 			},
 		},
-		// {
-		// 	name: "5 messages in a topic",
-		// 	input: &ListMessageRequest{
-		// 		TopicName:    "console_list_messages_topic_test",
-		// 		PartitionID:  -1,
-		// 		StartOffset:  10,
-		// 		MessageCount: 5,
-		// 	},
-		// 	expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
-		// 		var int64Type int64
+		{
+			name: "5 messages in a topic",
+			input: &ListMessageRequest{
+				TopicName:    "console_list_messages_topic_test",
+				PartitionID:  -1,
+				StartOffset:  10,
+				MessageCount: 5,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
+				var int64Type int64
 
-		// 		mockProgress.EXPECT().OnPhase("Get Partitions")
-		// 		mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
-		// 		mockProgress.EXPECT().OnPhase("Consuming messages")
-		// 		mockProgress.EXPECT().OnMessage(matchesOrder("10")).Times(1)
-		// 		mockProgress.EXPECT().OnMessage(matchesOrder("11")).Times(1)
-		// 		mockProgress.EXPECT().OnMessage(matchesOrder("12")).Times(1)
-		// 		mockProgress.EXPECT().OnMessage(matchesOrder("13")).Times(1)
-		// 		mockProgress.EXPECT().OnMessage(matchesOrder("14")).Times(1)
-		// 		mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(5)
-		// 		mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
-		// 	},
-		// },
-		// {
-		// 	name: "time stamp in future get last record",
-		// 	input: &ListMessageRequest{
-		// 		TopicName:      "console_list_messages_topic_test",
-		// 		PartitionID:    -1,
-		// 		MessageCount:   5,
-		// 		StartTimestamp: time.Date(2010, time.November, 11, 13, 0, 0, 0, time.UTC).UnixMilli(),
-		// 		StartOffset:    StartOffsetTimestamp,
-		// 	},
-		// 	expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
-		// 		var int64Type int64
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
+				mockProgress.EXPECT().OnPhase("Consuming messages")
+				mockProgress.EXPECT().OnMessage(matchesOrder("10")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("11")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("12")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("13")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("14")).Times(1)
+				mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(5)
+				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
+			},
+		},
+		{
+			name: "time stamp in future get last record",
+			input: &ListMessageRequest{
+				TopicName:      "console_list_messages_topic_test",
+				PartitionID:    -1,
+				MessageCount:   5,
+				StartTimestamp: time.Date(2010, time.November, 11, 13, 0, 0, 0, time.UTC).UnixMilli(),
+				StartOffset:    StartOffsetTimestamp,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
+				var int64Type int64
 
-		// 		mockProgress.EXPECT().OnPhase("Get Partitions")
-		// 		mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
-		// 		mockProgress.EXPECT().OnPhase("Consuming messages")
-		// 		mockProgress.EXPECT().OnMessage(matchesOrder("19")).Times(1)
-		// 		mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(1)
-		// 		mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
-		// 	},
-		// },
-		// {
-		// 	name: "time stamp in middle get 5 records",
-		// 	input: &ListMessageRequest{
-		// 		TopicName:      "console_list_messages_topic_test",
-		// 		PartitionID:    -1,
-		// 		MessageCount:   5,
-		// 		StartTimestamp: time.Date(2010, time.November, 10, 13, 10, 30, 0, time.UTC).UnixMilli(),
-		// 		StartOffset:    StartOffsetTimestamp,
-		// 	},
-		// 	expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
-		// 		var int64Type int64
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
+				mockProgress.EXPECT().OnPhase("Consuming messages")
+				mockProgress.EXPECT().OnMessage(matchesOrder("19")).Times(1)
+				mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(1)
+				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
+			},
+		},
+		{
+			name: "time stamp in middle get 5 records",
+			input: &ListMessageRequest{
+				TopicName:      "console_list_messages_topic_test",
+				PartitionID:    -1,
+				MessageCount:   5,
+				StartTimestamp: time.Date(2010, time.November, 10, 13, 10, 30, 0, time.UTC).UnixMilli(),
+				StartOffset:    StartOffsetTimestamp,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
+				var int64Type int64
 
-		// 		mockProgress.EXPECT().OnPhase("Get Partitions")
-		// 		mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
-		// 		mockProgress.EXPECT().OnPhase("Consuming messages")
-		// 		mockProgress.EXPECT().OnMessage(matchesOrder("11")).Times(1)
-		// 		mockProgress.EXPECT().OnMessage(matchesOrder("12")).Times(1)
-		// 		mockProgress.EXPECT().OnMessage(matchesOrder("13")).Times(1)
-		// 		mockProgress.EXPECT().OnMessage(matchesOrder("14")).Times(1)
-		// 		mockProgress.EXPECT().OnMessage(matchesOrder("15")).Times(1)
-		// 		mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(5)
-		// 		mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
-		// 	},
-		// },
-		// {
-		// 	name: "unknown topic",
-		// 	input: &ListMessageRequest{
-		// 		TopicName:    "console_list_messages_topic_test_unknown_topic",
-		// 		PartitionID:  -1,
-		// 		StartOffset:  -2,
-		// 		MessageCount: 100,
-		// 	},
-		// 	expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
-		// 		mockProgress.EXPECT().OnPhase("Get Partitions")
-		// 	},
-		// 	expectError: "failed to get partitions: UNKNOWN_TOPIC_OR_PARTITION: This server does not host this topic-partition.",
-		// },
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+				mockProgress.EXPECT().OnPhase("Get Watermarks and calculate consuming requests")
+				mockProgress.EXPECT().OnPhase("Consuming messages")
+				mockProgress.EXPECT().OnMessage(matchesOrder("11")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("12")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("13")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("14")).Times(1)
+				mockProgress.EXPECT().OnMessage(matchesOrder("15")).Times(1)
+				mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(5)
+				mockProgress.EXPECT().OnComplete(gomock.AssignableToTypeOf(int64Type), false)
+			},
+		},
+		{
+			name: "unknown topic",
+			input: &ListMessageRequest{
+				TopicName:    "console_list_messages_topic_test_unknown_topic",
+				PartitionID:  -1,
+				StartOffset:  -2,
+				MessageCount: 100,
+			},
+			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
+				mockProgress.EXPECT().OnPhase("Get Partitions")
+			},
+			expectError: "failed to get partitions: UNKNOWN_TOPIC_OR_PARTITION: This server does not host this topic-partition.",
+		},
 		{
 			name:          "single messages in a topic mock",
 			useFakeClient: true,
@@ -227,6 +228,12 @@ func Test_ListMessages(t *testing.T) {
 				MessageCount: 1,
 			},
 			expect: func(mockProgress *mocks.MockIListMessagesProgress, mockRequestor *mocks.MockClientRequestor) {
+
+				// This test is essentially a mocked version of the fetch singe message test above.
+				// This test is here to demonstrate how to use mocked client to do assertions on the calls we expect.
+				// Practically we would prefer integration tests against actual cluster where possible.
+				// But we can use the mocked approach to test for specific response or failure scenarios.
+
 				var int64Type int64
 
 				mockProgress.EXPECT().OnPhase("Get Partitions")
@@ -340,6 +347,83 @@ func Test_ListMessages(t *testing.T) {
 
 				mockProgress.EXPECT().OnPhase("Consuming messages")
 
+				// fetch
+				// create records
+				records := make([]*kgo.Record, 10)
+				for i := 10; i < 20; i++ {
+					order := Order{ID: strconv.Itoa(10)}
+					serializedOrder, err := json.Marshal(order)
+					assert.NoError(t, err)
+
+					records[i-10] = &kgo.Record{
+						Key:           []byte(strconv.Itoa(i)),
+						Value:         serializedOrder,
+						Timestamp:     time.Date(2010, time.November, 10, 13, i, 0, 0, time.UTC),
+						Topic:         "console_list_messages_topic_test_mock",
+						Partition:     0,
+						ProducerEpoch: 0,
+						ProducerID:    1,
+						LeaderEpoch:   1,
+						Offset:        int64(i),
+						Headers:       []kgo.RecordHeader{},
+					}
+				}
+
+				fetches := make([]kgo.Fetch, 1)
+				fetches[0] = kgo.Fetch{
+					Topics: []kgo.FetchTopic{
+						{
+							Topic: "console_list_messages_topic_test_mock",
+							Partitions: []kgo.FetchPartition{
+								{
+									Partition:        0,
+									Err:              nil,
+									HighWatermark:    20,
+									LastStableOffset: 20,
+									LogStartOffset:   0,
+									Records:          records,
+								},
+							},
+						},
+					},
+				}
+
+				var calls int32
+
+				// NOTE(bojan)
+				// against an actual redpanda cluster we only get 2 fetch calls for some reason
+				// mocked we get more not sure why
+
+				mockRequestor.EXPECT().PollFetches(
+					gomock.Any(),
+				).AnyTimes().DoAndReturn(func(ctx context.Context) kgo.Fetches {
+					if atomic.LoadInt32(&calls) == 0 {
+						atomic.StoreInt32(&calls, 1)
+						return fetches
+					}
+					return []kgo.Fetch{
+						{
+							Topics: []kgo.FetchTopic{
+								{
+									Topic: "",
+									Partitions: []kgo.FetchPartition{
+										{
+											Partition:        0,
+											Err:              nil,
+											HighWatermark:    0,
+											LastStableOffset: 0,
+											LogStartOffset:   0,
+											Records:          nil,
+										},
+									},
+								},
+							},
+						},
+					}
+				})
+
+				mockRequestor.EXPECT().Close().AnyTimes()
+
 				mockProgress.EXPECT().OnMessage(matchesOrder("10")).Times(1)
 
 				mockProgress.EXPECT().OnMessageConsumed(gomock.AssignableToTypeOf(int64Type)).Times(1)
@@ -385,7 +469,6 @@ func Test_ListMessages(t *testing.T) {
 					kafka.WithClient(mockClient),
 					kafka.WithClientGenerator(mockClientGenerator),
 				)
-
 			}
 
 			svc, err := NewService(cfg.Console, log, kafkaSvc, nil, nil)
