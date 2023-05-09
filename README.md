@@ -1,5 +1,7 @@
 # Redpanda Console – A UI for Data Streaming
 
+http://zhanghh.cn/another-kafka-monitor-kowl/
+
 [![Go Report Card](https://goreportcard.com/badge/github.com/cloudhut/kowl)](https://goreportcard.com/report/github.com/cloudhut/kowl)
 ![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/redpanda-data/console?sort=semver)
 [![Docker Repository](https://img.shields.io/badge/docker%20image-ready-green "Docker Repository")](https://hub.docker.com/r/redpandadata/console/tags)
